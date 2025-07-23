@@ -9,6 +9,7 @@ import {
   financialCoach,
   type FinancialCoachInput,
 } from "@/ai/flows/financial-coach";
+import { generatePersonalizedAdvice } from "@/ai/flows/generate-personalized-advice";
 import {
   sendMessage,
   getMessagesForChat,
@@ -33,32 +34,31 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Loader2, Send, Bot, User as UserIcon, Volume2, Play, LogOut } from "lucide-react";
+import { Loader2, Send, Bot, User as UserIcon, Mic, Square, LogOut, Play, Save } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useBrowserTts } from "@/hooks/use-browser-tts";
-import { languages, langToLocale } from "@/lib/translations";
+import { useSpeechRecognition } from "@/hooks/use-speech-recognition";
+import { languages, langToLocale, type LanguageCode } from "@/lib/translations";
 import { createId } from "@paralleldrive/cuid2";
-import { useAppTranslations } from "@/hooks/use-app-translations";
+import { useAppTranslations } from "@/providers/translations-provider";
 import { useToast } from "@/hooks/use-toast";
+import advicePrompts from "@/lib/advice-prompts.json";
+import { createAdviceSessionForCurrentUser } from "@/services/advice-service";
+
+type MessageRole = "user" | "assistant";
+type ConversationStage = "greeting" | "prompt_selection" | "questioning" | "generating_advice" | "chatting";
 
 type Message = {
   id: string;
-  role: "user" | "assistant";
+  role: MessageRole;
   content: string;
+  buttons?: { label: string; value: string; action?: "select_prompt" }[];
 };
 
 const formSchema = z.object({
   query: z.string().min(1, "Message cannot be empty."),
-  language: z.enum(["English", "Hindi", "Marathi"]),
 });
 
 type FormValues = z.infer<typeof formSchema>;
@@ -69,49 +69,192 @@ interface FinancialCoachProps {
   chatPartner?: User;
 }
 
-
-function AudioPlayer({ message, language }: { message: Message, language: string }) {
-  const { speak, isPlaying } = useBrowserTts();
-  
-  if (message.role !== "assistant") return null;
-
-  const locale = langToLocale[language as keyof typeof langToLocale];
-
-  return (
-    <Button
-      variant="ghost"
-      size="icon"
-      onClick={() => speak(message.content, locale)}
-      className="h-7 w-7"
-    >
-      {isPlaying ? (
-        <Volume2 className="h-4 w-4" />
-      ) : (
-        <Play className="h-4 w-4" />
-      )}
-      <span className="sr-only">Play audio</span>
-    </Button>
-  );
-}
-
 export function FinancialCoach({ currentUser, chatSession, chatPartner }: FinancialCoachProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string>("");
-  const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const scrollViewportRef = useRef<HTMLDivElement>(null);
   const { t, languageCode } = useAppTranslations();
   const { toast } = useToast();
   const isHumanChat = !!(chatSession && chatPartner);
+  const isGuest = currentUser.id === 'guest';
+
+  // Guided flow state
+  const [conversationStage, setConversationStage] = useState<ConversationStage>(isHumanChat ? "chatting" : "greeting");
+  const [selectedPromptKey, setSelectedPromptKey] = useState<string | null>(null);
+  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+  const [collectedAnswers, setCollectedAnswers] = useState<Record<string, string>>({});
+  const [generatedAdvice, setGeneratedAdvice] = useState<string | null>(null);
+  const [isAdviceSaved, setIsAdviceSaved] = useState(false);
 
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: {
       query: "",
-      language: "English",
     },
   });
 
-  const language = form.watch("language");
+  const [currentlyPlayingId, setCurrentlyPlayingId] = useState<string | null>(null);
+
+  const { speak, stop: stopSpeaking, isPlaying } = useBrowserTts({
+    onEnd: () => setCurrentlyPlayingId(null),
+  });
+
+  const { isListening, transcript, startListening, stopListening } = useSpeechRecognition({});
+
+  useEffect(() => {
+    if (transcript) {
+        form.setValue("query", transcript);
+    }
+  }, [transcript, form]);
+  
+  useEffect(() => {
+    if (transcript && !isListening) {
+      // Wait a tick to ensure the input value is set before submitting
+      setTimeout(() => form.handleSubmit(handleSubmit)(), 0);
+    }
+  }, [transcript, isListening, form]);
+
+
+  const startNewGuidedFlow = useCallback(() => {
+    const greetingText = isGuest ? t.coach.greeting_guest : t.coach.greeting_user.replace('{name}', currentUser.fullName || 'User');
+    const greetingMessage: Message = {
+      id: createId(),
+      role: 'assistant',
+      content: greetingText,
+    };
+    const promptButtons = advicePrompts.map(p => ({ label: p.title[languageCode as LanguageCode], value: p.key, action: "select_prompt" as const }));
+    const promptMessage: Message = {
+      id: createId(),
+      role: 'assistant',
+      content: t.coach.prompt_selection_title,
+      buttons: promptButtons,
+    };
+    setMessages([greetingMessage, promptMessage]);
+    setConversationStage("prompt_selection");
+    setSelectedPromptKey(null);
+    setCurrentQuestionIndex(0);
+    setCollectedAnswers({});
+    setGeneratedAdvice(null);
+    setIsAdviceSaved(false);
+  }, [currentUser, languageCode, t, isGuest]);
+
+  useEffect(() => {
+    if (conversationStage === 'greeting' && !isHumanChat) {
+      startNewGuidedFlow();
+    }
+  }, [conversationStage, isHumanChat, startNewGuidedFlow]);
+
+  const handlePromptSelection = async (promptKey: string) => {
+    // Removed the guest check that was blocking the flow
+    setSelectedPromptKey(promptKey);
+    const selectedPrompt = advicePrompts.find(p => p.key === promptKey);
+    if (!selectedPrompt) return;
+
+    setMessages(prev => prev.map(m => ({ ...m, buttons: undefined })));
+
+    const userSelectionMessage: Message = {
+      id: createId(),
+      role: 'user',
+      content: selectedPrompt.title[languageCode as LanguageCode],
+    };
+    setMessages(prev => [...prev, userSelectionMessage]);
+
+    setConversationStage("questioning");
+    setCurrentQuestionIndex(0);
+    askQuestion(0, promptKey);
+  };
+
+  const askQuestion = (qIndex: number, promptKey: string) => {
+    const prompt = advicePrompts.find(p => p.key === promptKey);
+    if (prompt && prompt.questions[qIndex]) {
+      const question = prompt.questions[qIndex];
+      const questionMessage: Message = {
+        id: createId(),
+        role: 'assistant',
+        content: question.label[languageCode as LanguageCode],
+      };
+      setMessages(prev => [...prev, questionMessage]);
+    }
+  };
+
+  const handleSaveAndEndChat = async () => {
+    if (!generatedAdvice || !selectedPromptKey || isGuest) return;
+
+    try {
+        if (!isAdviceSaved) {
+            await createAdviceSessionForCurrentUser({
+                promptKey: selectedPromptKey,
+                formData: collectedAnswers,
+                language: languageCode as LanguageCode,
+                generatedAdvice: generatedAdvice,
+            }, true); // `true` for isLoggedIn
+            
+            toast({ title: t.coach.toast_advice_saved_title, description: t.coach.toast_advice_saved_desc });
+            setIsAdviceSaved(true); // Mark as saved
+        }
+        // After saving (or if already saved), reset the flow.
+        startNewGuidedFlow();
+
+    } catch(error) {
+        console.error("Failed to save advice:", error);
+        toast({ title: t.common.error, description: t.coach.toast_advice_save_error, variant: "destructive" });
+    }
+  };
+
+
+  const handleQuestionAnswer = async (answer: string) => {
+    const userMessage: Message = { role: 'user', content: answer, id: createId() };
+    setMessages(prev => [...prev, userMessage]);
+    
+    if (!selectedPromptKey) return;
+    const prompt = advicePrompts.find(p => p.key === selectedPromptKey);
+    if (!prompt) return;
+
+    const questionKey = prompt.questions[currentQuestionIndex].key;
+    const newAnswers = { ...collectedAnswers, [questionKey]: answer };
+    setCollectedAnswers(newAnswers);
+
+    const nextQuestionIndex = currentQuestionIndex + 1;
+    if (nextQuestionIndex < prompt.questions.length) {
+      setCurrentQuestionIndex(nextQuestionIndex);
+      askQuestion(nextQuestionIndex, selectedPromptKey);
+    } else {
+      setConversationStage("generating_advice");
+      setIsLoading(true);
+      const adviceMessage: Message = { id: createId(), role: 'assistant', content: t.coach.generating_advice };
+      setMessages(prev => [...prev, adviceMessage]);
+      
+      try {
+        const adviceResult = await generatePersonalizedAdvice({
+          promptKey: selectedPromptKey,
+          formData: newAnswers,
+          language: languageCode,
+        });
+
+        setGeneratedAdvice(adviceResult.advice);
+        setIsAdviceSaved(false);
+
+        const resultMessage: Message = { 
+            id: createId(), 
+            role: 'assistant', 
+            content: adviceResult.advice,
+        };
+        setMessages(prev => [...prev.filter(m => m.id !== adviceMessage.id), resultMessage]);
+        
+        const finalMessage: Message = { id: createId(), role: 'assistant', content: t.coach.follow_up_prompt };
+        setMessages(prev => [...prev, finalMessage]);
+
+      } catch (e) {
+        const errorMessage: Message = { id: createId(), role: 'assistant', content: t.common.error_generic };
+        setMessages(prev => [...prev.filter(m => m.id !== adviceMessage.id), errorMessage]);
+      } finally {
+        setIsLoading(false);
+        setConversationStage("chatting");
+      }
+    }
+  };
+
 
   const fetchHumanMessages = useCallback(async () => {
     if (!chatSession) return;
@@ -120,62 +263,84 @@ export function FinancialCoach({ currentUser, chatSession, chatPartner }: Financ
       id: msg.id,
       role: msg.senderId === currentUser.id ? 'user' : 'assistant',
       content: msg.content
-    })).reverse(); // Reverse to show oldest first
+    })).reverse(); 
     setMessages(formattedMessages);
   }, [chatSession, currentUser.id]);
 
   useEffect(() => {
     if (isHumanChat) {
-      // Mark messages as read when the chat is opened
       markMessagesAsRead(chatSession!.id, currentUser.id);
-
       fetchHumanMessages();
-      const interval = setInterval(fetchHumanMessages, 5000); // Poll every 5 seconds
+      const interval = setInterval(fetchHumanMessages, 5000); 
       return () => clearInterval(interval);
     }
   }, [isHumanChat, fetchHumanMessages, chatSession, currentUser.id]);
 
-  useEffect(() => {
-    const langName = languages[languageCode as keyof typeof languages]?.name;
-    if (langName) {
-      form.setValue("language", langName as "English" | "Hindi" | "Marathi");
-    }
-  }, [languageCode, form]);
+  const languageName = languages[languageCode as keyof typeof languages]?.name || "English";
+  const locale = langToLocale[languageName as keyof typeof langToLocale] || 'en-US';
 
   useEffect(() => {
-    if (scrollAreaRef.current) {
-      scrollAreaRef.current.scrollTo({
-        top: scrollAreaRef.current.scrollHeight,
+    if (scrollViewportRef.current) {
+        scrollViewportRef.current.scrollTo({
+        top: scrollViewportRef.current.scrollHeight,
         behavior: "smooth",
       });
     }
   }, [messages]);
 
+  const handlePlayPause = (message: Message) => {
+    if (currentlyPlayingId === message.id && isPlaying) {
+        stopSpeaking();
+    } else {
+        stopSpeaking();
+        speak(message.content, locale);
+        setCurrentlyPlayingId(message.id);
+    }
+  };
+
   const handleCloseChat = async () => {
     if (!chatSession) return;
     await updateChatRequestStatus(chatSession.id, 'closed');
     toast({ title: "Chat Closed", description: "The chat session has been ended."});
-    window.location.reload(); // Force reload to reflect the change
+    window.location.reload(); 
   }
 
-  const onSubmit: SubmitHandler<FormValues> = async (data) => {
+  const handleSubmit = form.handleSubmit(async (data: FormValues) => {
+    if (conversationStage === 'questioning') {
+      handleQuestionAnswer(data.query);
+      form.reset({ query: '' });
+      return;
+    }
+    
     const userMessage: Message = { role: 'user', content: data.query, id: createId() };
     setMessages(prev => [...prev, userMessage]);
     setIsLoading(true);
     setError('');
-    form.reset({ query: '', language: data.language });
+    form.reset({ query: '' });
   
     try {
       if (isHumanChat) {
-        // Human-to-human chat logic
         await sendMessage(chatSession.id, currentUser.id, data.query);
-        // Optimistically show message, polling will confirm
+        await fetchHumanMessages(); 
       } else {
-        // AI chat logic
+        if (conversationStage !== "chatting") {
+            setConversationStage("chatting");
+            setSelectedPromptKey(null);
+            setCollectedAnswers({});
+            setCurrentQuestionIndex(0);
+        }
+
         const historyForAI = [...messages.map(m => ({role: m.role, content: m.content})), {role: userMessage.role, content: userMessage.content}];
+        
+        const langName = languages[languageCode]?.name || "English";
+        
         const input: FinancialCoachInput = {
-          language: data.language,
+          language: langName as "English" | "Hindi" | "Marathi" | "German",
           history: historyForAI,
+          age: currentUser.age ?? undefined,
+          gender: currentUser.gender ?? undefined,
+          city: currentUser.city ?? undefined,
+          country: currentUser.country ?? undefined,
         };
         const result = await financialCoach(input);
         if (!result || !result.response) throw new Error("AI returned an invalid response.");
@@ -194,76 +359,123 @@ export function FinancialCoach({ currentUser, chatSession, chatPartner }: Financ
     } finally {
         setIsLoading(false);
     }
-  };
+  });
 
-  const cardTitle = isHumanChat ? `Chat with ${chatPartner.fullName}` : t.coach.chat_title;
-  const cardDescription = isHumanChat ? `You are now chatting directly with a user.` : t.coach.chat_description;
+  const cardTitle = isHumanChat ? `${t.coach.chat_with} ${chatPartner?.fullName}` : t.coach.chat_title;
+  const cardDescription = isHumanChat ? t.coach.human_chat_desc : t.coach.chat_description;
 
   return (
-    <Card className="w-full">
-      <CardHeader className="flex flex-row justify-between items-center">
+    <Card className="w-full flex flex-col h-[calc(100vh-10rem)] max-h-[700px]">
+      <CardHeader className="flex flex-row justify-between items-center border-b">
         <div>
             <CardTitle>{cardTitle}</CardTitle>
             <CardDescription>{cardDescription}</CardDescription>
         </div>
-        {isHumanChat && currentUser.role === 'coach' && (
-            <Button variant="outline" size="sm" onClick={handleCloseChat}>
-                <LogOut className="mr-2 h-4 w-4"/>
-                Close Chat
-            </Button>
-        )}
+        <div className="flex items-center gap-2">
+            {isHumanChat && currentUser.role === 'coach' && (
+                <Button variant="outline" size="sm" onClick={handleCloseChat}>
+                    <LogOut className="mr-2 h-4 w-4"/>
+                    {t.coach.close_chat}
+                </Button>
+            )}
+        </div>
       </CardHeader>
-      <CardContent>
-        <ScrollArea className="h-[400px] w-full pr-4" ref={scrollAreaRef}>
-          <div className="space-y-4">
+      <CardContent className="flex-1 p-0 overflow-hidden">
+        <ScrollArea className="h-full w-full" viewportRef={scrollViewportRef}>
+          <div className="space-y-4 p-4">
+            {messages.length === 0 && (
+                <div className="text-center text-muted-foreground pt-10">
+                    {isHumanChat ? t.coach.start_conversation : t.coach.starting_conversation}
+                </div>
+            )}
             {messages.map((message) => (
               <div
                 key={message.id}
                 className={cn(
-                  "flex items-start gap-3",
+                  "flex items-end gap-3",
                   message.role === "user" ? "justify-end" : "justify-start"
                 )}
               >
                 {message.role === "assistant" && (
-                  <Avatar className="h-8 w-8">
-                     <AvatarImage src={isHumanChat ? `https://placehold.co/100x100.png` : undefined} data-ai-hint="profile picture" alt={chatPartner?.fullName ?? 'Bot'} />
-                    <AvatarFallback>
-                      {isHumanChat ? chatPartner?.fullName?.[0]?.toUpperCase() : <Bot className="h-5 w-5" />}
-                    </AvatarFallback>
-                  </Avatar>
+                   <div className="flex flex-col items-start gap-2">
+                     <div className="flex items-end gap-2">
+                        <Avatar className="h-8 w-8">
+                            <AvatarFallback>
+                                {isHumanChat ? chatPartner?.fullName?.[0]?.toUpperCase() : <Bot className="h-5 w-5" />}
+                            </AvatarFallback>
+                           {isHumanChat && chatPartner?.fullName && (
+                               <AvatarImage src={'https://placehold.co/100x100.png'} data-ai-hint="profile picture" alt={chatPartner.fullName} />
+                           )}
+                        </Avatar>
+                        <div
+                          className={cn(
+                            "max-w-xs rounded-lg p-3 text-sm md:max-w-md shadow",
+                            "bg-muted rounded-bl-none"
+                          )}
+                        >
+                          <p className="whitespace-pre-wrap">{message.content}</p>
+                        </div>
+                         {!isHumanChat && (
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7"
+                                onClick={() => handlePlayPause(message)}
+                                disabled={isListening}
+                            >
+                                {currentlyPlayingId === message.id && isPlaying ? <Square className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                            </Button>
+                         )}
+                     </div>
+                      {message.buttons && (
+                        <div className="flex flex-wrap gap-2 ml-10">
+                          {message.buttons.map(button => (
+                            <Button key={button.value} size="sm" variant="outline" 
+                                onClick={() => {
+                                    if (button.action === 'select_prompt') handlePromptSelection(button.value);
+                                }}
+                            >
+                              {button.label}
+                            </Button>
+                          ))}
+                        </div>
+                      )}
+                   </div>
                 )}
-                <div
-                  className={cn(
-                    "max-w-xs rounded-lg p-3 text-sm md:max-w-md",
-                    message.role === "user"
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-muted"
-                  )}
-                >
-                  <div className="flex items-center gap-2">
-                    <p className="whitespace-pre-wrap">{message.content}</p>
-                    {message.role === "assistant" && !isHumanChat && <AudioPlayer message={message} language={language} />}
-                  </div>
-                </div>
+                
                 {message.role === "user" && (
-                  <Avatar className="h-8 w-8">
-                    <AvatarImage src={`https://placehold.co/100x100.png`} data-ai-hint="profile picture" alt={currentUser.fullName ?? 'User'} />
-                    <AvatarFallback>
-                      <UserIcon className="h-5 w-5" />
-                    </AvatarFallback>
-                  </Avatar>
+                    <div className="flex items-end gap-2">
+                        <div
+                            className={cn(
+                                "max-w-xs rounded-lg p-3 text-sm md:max-w-md shadow",
+                                "bg-primary text-primary-foreground rounded-br-none"
+                            )}
+                        >
+                            <p className="whitespace-pre-wrap">{message.content}</p>
+                        </div>
+                        <Avatar className="h-8 w-8">
+                            <AvatarImage src={'https://placehold.co/100x100.png'} data-ai-hint="profile picture" alt={currentUser.fullName ?? 'User'} />
+                            <AvatarFallback>
+                                <UserIcon className="h-5 w-5" />
+                            </AvatarFallback>
+                        </Avatar>
+                    </div>
                 )}
               </div>
             ))}
-            {isLoading && (
+            {isLoading && !isHumanChat && (
               <div className="flex items-start gap-3 justify-start">
                 <Avatar className="h-8 w-8">
                   <AvatarFallback>
-                     {isHumanChat ? chatPartner?.fullName?.[0]?.toUpperCase() : <Bot className="h-5 w-5" />}
+                     <Bot className="h-5 w-5" />
                   </AvatarFallback>
                 </Avatar>
                 <div className="max-w-xs rounded-lg p-3 text-sm md:max-w-md bg-muted">
-                  <Loader2 className="h-5 w-5 animate-spin" />
+                  <div className="flex items-center">
+                    <span className="animate-bounce mr-1">.</span>
+                    <span className="animate-bounce delay-75 mr-1">.</span>
+                    <span className="animate-bounce delay-150">.</span>
+                  </div>
                 </div>
               </div>
             )}
@@ -271,38 +483,37 @@ export function FinancialCoach({ currentUser, chatSession, chatPartner }: Financ
           </div>
         </ScrollArea>
       </CardContent>
-      <CardFooter className="pt-4 border-t">
+      <CardFooter className="pt-4 border-t flex flex-col items-stretch gap-2">
+        {!isHumanChat && generatedAdvice && (
+          <div className="flex justify-center">
+            <Button
+              onClick={handleSaveAndEndChat}
+              disabled={isAdviceSaved}
+              variant="outline"
+              size="sm"
+            >
+              <Save className="mr-2 h-4 w-4" />
+              {isAdviceSaved ? t.coach.advice_saved_button : t.coach.save_and_new_chat_button}
+            </Button>
+          </div>
+        )}
         <Form {...form}>
           <form
-            onSubmit={form.handleSubmit(onSubmit)}
-            className="flex w-full items-start gap-4"
+            onSubmit={handleSubmit}
+            className="flex w-full items-start gap-3"
           >
-             {!isHumanChat && <FormField
-              control={form.control}
-              name="language"
-              render={({ field }) => (
-                <FormItem className="w-1/4">
-                  <Select
-                    onValueChange={field.onChange}
-                    value={field.value}
-                    defaultValue={field.value}
-                    disabled={isLoading || messages.length > 0}
-                  >
-                    <FormControl>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Language" />
-                      </SelectTrigger>
-                    </FormControl>
-                    <SelectContent>
-                      <SelectItem value="English">English</SelectItem>
-                      <SelectItem value="Hindi">Hindi</SelectItem>
-                      <SelectItem value="Marathi">Marathi</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />}
+             {!isHumanChat && (
+                <Button 
+                    type="button" 
+                    size="icon" 
+                    className={cn("shrink-0", isListening ? 'bg-red-500 hover:bg-red-600' : 'bg-green-500 hover:bg-green-600')}
+                    onClick={() => isListening ? stopListening() : startListening({ lang: locale })}
+                    disabled={isLoading || conversationStage === 'prompt_selection'}
+                >
+                   {isListening ? <Square className="h-5 w-5"/> : <Mic className="h-5 w-5" />}
+                   <span className="sr-only">{isListening ? 'Stop listening' : 'Start listening'}</span>
+                </Button>
+             )}
             <FormField
               control={form.control}
               name="query"
@@ -310,9 +521,9 @@ export function FinancialCoach({ currentUser, chatSession, chatPartner }: Financ
                 <FormItem className="flex-1">
                   <FormControl>
                     <Input
-                      placeholder={t.coach.placeholder}
+                      placeholder={isListening ? "Listening..." : (conversationStage === 'questioning' ? t.coach.answer_placeholder : t.coach.placeholder)}
                       {...field}
-                      disabled={isLoading}
+                      disabled={isLoading || isListening || conversationStage === 'prompt_selection'}
                       autoComplete="off"
                     />
                   </FormControl>
@@ -322,11 +533,11 @@ export function FinancialCoach({ currentUser, chatSession, chatPartner }: Financ
             />
             <Button
               type="submit"
-              disabled={isLoading}
+              disabled={isLoading || conversationStage === 'prompt_selection'}
               size="icon"
               className="shrink-0"
             >
-              {isLoading ? (
+              {isLoading && !isHumanChat ? (
                 <Loader2 className="h-5 w-5 animate-spin" />
               ) : (
                 <Send className="h-5 w-5" />

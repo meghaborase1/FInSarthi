@@ -15,17 +15,13 @@ import OpenAI from 'openai';
 import { getProducts } from '@/services/financial-product-service';
 import { GeneratePersonalizedAdviceOutputSchema } from './generate-personalized-advice-schema';
 import advicePrompts from '@/lib/advice-prompts.json';
-
-const groq = new OpenAI({
-  apiKey: process.env.GROQ_API_KEY,
-  baseURL: 'https://api.groq.com/openai/v1',
-});
+import { type LanguageCode, languages } from '@/lib/translations';
 
 // This schema is now dynamic, accepting any key-value pair of strings.
 const GeneratePersonalizedAdviceInputSchema = z.object({
   promptKey: z.string().describe("The key of the selected prompt from the JSON config."),
   formData: z.record(z.string()).describe("The user's answers to the dynamic questions."),
-  language: z.enum(["en", "hi", "mr"]),
+  language: z.enum(["en", "hi", "mr", "de"]),
 });
 
 export type GeneratePersonalizedAdviceInput = z.infer<typeof GeneratePersonalizedAdviceInputSchema>;
@@ -42,6 +38,15 @@ const generatePersonalizedAdviceFlow = ai.defineFlow(
     outputSchema: GeneratePersonalizedAdviceOutputSchema,
   },
   async (input) => {
+    if (!process.env.GROQ_API_KEY) {
+      return { advice: "I'm sorry, the AI service is not configured. The GROQ_API_KEY is missing." };
+    }
+    
+    const groq = new OpenAI({
+      apiKey: process.env.GROQ_API_KEY,
+      baseURL: 'https://api.groq.com/openai/v1',
+    });
+
     try {
         const { promptKey, formData, language } = input;
         
@@ -51,17 +56,17 @@ const generatePersonalizedAdviceFlow = ai.defineFlow(
         if (!promptConfig) {
             throw new Error(`Prompt with key "${promptKey}" not found.`);
         }
-
-        // Dynamically build a string of the user's answers, adding currency context for numeric types.
+        
+        // Dynamically build a string of the user's answers
         const userAnswers = Object.entries(formData)
             .map(([key, value]) => {
                 const questionConfig = promptConfig.questions.find(q => q.key === key);
                 if (!questionConfig) return ''; // Skip if question config not found
 
-                const questionLabel = questionConfig.label[language as keyof typeof questionConfig.label] || key;
+                const questionLabel = questionConfig.label[language as LanguageCode] || key;
                 
-                // Add currency symbol for numeric inputs to give AI better context
-                const displayValue = questionConfig.type === 'number' ? `₹${value}` : value;
+                // Use the value directly without any currency symbol
+                const displayValue = value;
                 
                 return `- ${questionLabel}: ${displayValue}`;
             })
@@ -82,7 +87,8 @@ const generatePersonalizedAdviceFlow = ai.defineFlow(
       `;
 
       // Use the system prompt from the JSON config
-      const systemPrompt = promptConfig.systemPrompt[language as keyof typeof promptConfig.systemPrompt];
+      const systemPrompt = promptConfig.systemPrompt[language as LanguageCode];
+      const languageName = languages[language]?.name || "English";
 
       const finalPrompt = `
       ${systemPrompt}
@@ -95,10 +101,10 @@ const generatePersonalizedAdviceFlow = ai.defineFlow(
 
       Your Task:
       1.  **Analyze the user's situation** based on the information they provided.
-      2.  **Provide Actionable Steps:** Give 3-5 clear, simple, and prioritized steps.
+      2.  **Provide Actionable Steps:** Give 3-5 clear, simple, and prioritized steps. Your response should be well-structured, easy to read, and use markdown for formatting (like lists and bold text).
       3.  **Suggest Products:** When relevant, suggest suitable products from the list provided. Do not invent products.
-      4.  **Language and Tone:** Your response MUST be in ${language}. Be encouraging, empathetic, and supportive. Your name is FinSarthi.
-      5.  **Output Format**: Your response MUST be ONLY the advice text. Do not include any other text, greetings, explanations, or markdown formatting.
+      4.  **Language and Tone:** Your response MUST be in ${languageName}. Be encouraging, empathetic, and supportive. Your name is FINmate.
+      5.  **Output Format**: Your response MUST be ONLY the advice text. Do not include any other text, greetings, or explanations.
       `;
 
       const completion = await groq.chat.completions.create({

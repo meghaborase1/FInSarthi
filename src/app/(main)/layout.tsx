@@ -17,6 +17,7 @@ import {
   Loader2,
   LogOut,
   Users,
+  History,
 } from "lucide-react";
 import {
   Sidebar,
@@ -46,7 +47,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { Separator } from "@/components/ui/separator";
 import { Logo } from "@/components/logo";
 import { useAuth } from "@/hooks/use-auth";
-import { useAppTranslations } from "@/hooks/use-app-translations";
+import { useAppTranslations } from "@/providers/translations-provider";
 import { getUnreadMessageCountForUser } from "@/services/chat-service";
 
 function AppHeader() {
@@ -57,7 +58,7 @@ function AppHeader() {
 
   const handleLogout = () => {
     logout();
-    router.push('/login');
+    router.push('/home');
   };
 
   return (
@@ -76,7 +77,7 @@ function AppHeader() {
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon" className="rounded-full">
               <Avatar>
-                <AvatarImage src="https://placehold.co/100x100" alt={user?.fullName ?? 'User'} />
+                <AvatarImage src="https://placehold.co/100x100" data-ai-hint="profile picture" alt={user?.fullName ?? 'User'} />
                 <AvatarFallback>{user?.fullName?.[0]?.toUpperCase() ?? 'U'}</AvatarFallback>
               </Avatar>
               <span className="sr-only">Toggle user menu</span>
@@ -128,15 +129,14 @@ function MainSidebar() {
 
   const handleLogout = () => {
     logout();
-    router.push('/login');
+    router.push('/home');
   };
   
   const menuItems = [
-    { href: "/dashboard", label: t.nav.dashboard, icon: LayoutGrid },
     { href: "/coach", label: t.nav.coach, icon: MessageCircle, badge: unreadCount > 0 ? String(unreadCount) : undefined },
+    { href: "/advice", label: t.nav.advice, icon: History },
     { href: "/summarizer", label: t.nav.summarizer, icon: FileText },
     { href: "/translator", label: t.nav.translator, icon: Languages },
-    { href: "/advice", label: t.nav.advice, icon: Lightbulb },
     { href: "/coaches", label: "Regional Coaches", icon: Users },
   ];
 
@@ -217,7 +217,7 @@ function CoachLayout({ children }: { children: React.ReactNode }) {
 
   const handleLogout = () => {
     logout();
-    router.push('/login');
+    router.push('/home');
   };
 
   const navItems = [
@@ -245,7 +245,7 @@ function CoachLayout({ children }: { children: React.ReactNode }) {
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon" className="rounded-full">
                 <Avatar>
-                  <AvatarImage src="https://placehold.co/100x100" alt={user?.fullName ?? 'Coach'} />
+                  <AvatarImage src="https://placehold.co/100x100" data-ai-hint="profile picture" alt={user?.fullName ?? 'Coach'} />
                   <AvatarFallback>{user?.fullName?.[0]?.toUpperCase() ?? 'C'}</AvatarFallback>
                 </Avatar>
                 <span className="sr-only">Toggle user menu</span>
@@ -274,7 +274,7 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
-      router.replace("/login");
+      router.replace("/home");
     }
   }, [isLoading, isAuthenticated, router]);
 
@@ -302,9 +302,9 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
     return <CoachLayout>{children}</CoachLayout>;
   }
 
-  // If a customer tries to access a coach route, redirect them to their dashboard
+  // If a customer tries to access a coach route, redirect them to their main page
   if (user.role === 'customer' && (pathname === '/coach-dashboard')) {
-      router.replace('/dashboard');
+      router.replace('/coach');
       return (
         <div className="flex min-h-screen w-full items-center justify-center bg-background">
           <Loader2 className="h-8 w-8 animate-spin text-primary" />

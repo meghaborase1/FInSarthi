@@ -1,23 +1,26 @@
 
 "use server";
 
-import { db } from "@/lib/db";
-import { adviceSessions, users, type NewAdviceSession, type AdviceSession } from "@/lib/db/schema";
+import { getDbInstance } from "@/lib/db";
+import { adviceSessions, users, type NewAdviceSession, type AdviceSession as RawAdviceSession } from "@/lib/db/schema";
 import { eq, desc, isNull } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
+
+// Redefine AdviceSession locally to remove income/expenses which are no longer part of the flow.
+export type AdviceSession = Omit<RawAdviceSession, 'formData'> & {
+  formData: Record<string, any>;
+};
+
 
 /**
  * A helper function to process a raw database session object
  * into the AdviceSession type used by the application.
- * It extracts income and expenses from the formData JSON for dashboard compatibility.
  */
 function processSession(session: typeof adviceSessions.$inferSelect): AdviceSession {
     const formData = (session.formData as Record<string, any>) || {};
     return {
         ...session,
         formData: formData,
-        income: Number(formData?.income) || 0,
-        expenses: Number(formData?.expenses) || 0,
     }
 }
 
@@ -27,6 +30,8 @@ function processSession(session: typeof adviceSessions.$inferSelect): AdviceSess
  * @returns The most recently created user.
  */
 async function getMostRecentUser() {
+    const db = getDbInstance();
+    if (!db) return null;
     const [latestUser] = await db.select().from(users).orderBy(desc(users.createdAt)).limit(1);
     return latestUser;
 }
@@ -43,6 +48,19 @@ export async function createAdviceSessionForCurrentUser(
   data: Omit<NewAdviceSession, 'id' | 'createdAt' | 'userId'>,
   isLoggedIn: boolean
 ): Promise<AdviceSession> {
+  const db = getDbInstance();
+  if (!db) {
+    // If there's no DB, we can't save but we should return a mock session
+    // so the onboarding flow can complete without crashing.
+    const mockSession = {
+      id: "temp_id",
+      userId: null,
+      createdAt: new Date(),
+      ...data
+    };
+    return processSession(mockSession as any);
+  }
+
   let valuesToInsert: NewAdviceSession = {
     ...data,
     userId: null,
@@ -59,7 +77,6 @@ export async function createAdviceSessionForCurrentUser(
   
   if (isLoggedIn) {
       revalidatePath('/advice');
-      revalidatePath('/dashboard');
   }
 
   return processSession(newSession);
@@ -71,11 +88,13 @@ export async function createAdviceSessionForCurrentUser(
  * @param userId The ID of the user.
  */
 export async function associateSessionWithUser(sessionId: string, userId: string) {
+  const db = getDbInstance();
+  if (!db) return;
+
   await db.update(adviceSessions)
     .set({ userId })
     .where(eq(adviceSessions.id, sessionId));
 
-  revalidatePath('/dashboard');
   revalidatePath('/advice');
 }
 
@@ -87,6 +106,9 @@ export async function associateSessionWithUser(sessionId: string, userId: string
  * @returns The latest advice session, or null if none exists.
  */
 export async function getLatestAdviceSessionForUser(userId?: string): Promise<AdviceSession | null> {
+  const db = getDbInstance();
+  if (!db) return null;
+
   let targetUserId = userId;
   if (!targetUserId) {
     const recentUser = await getMostRecentUser();
@@ -113,6 +135,9 @@ export async function getLatestAdviceSessionForUser(userId?: string): Promise<Ad
  * @returns An array of advice sessions.
  */
 export async function getAdviceHistoryForUser(userId?: string): Promise<AdviceSession[]> {
+    const db = getDbInstance();
+    if (!db) return [];
+
     let targetUserId = userId;
     if (!targetUserId) {
         const recentUser = await getMostRecentUser();

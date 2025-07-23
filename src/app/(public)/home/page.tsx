@@ -1,8 +1,16 @@
+"use client";
 
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
 import Image from "next/image";
 import { ArrowRight, Bot, BarChart2, MessageSquare, Briefcase } from "lucide-react";
+import { AuthDialog } from "@/components/auth-dialog";
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { FinancialCoach } from "@/components/financial-coach";
+import type { User } from "@/lib/db/schema";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useAppTranslations } from "@/providers/translations-provider";
 
 const FeatureCard = ({ icon, title, description }: { icon: React.ReactNode, title: string, description: string }) => (
   <div className="flex flex-col items-center p-6 text-center bg-card rounded-xl shadow-sm">
@@ -30,6 +38,25 @@ const HeroIllustration = () => (
 
 
 export default function HomePage() {
+  const [isAuthDialogOpen, setIsAuthDialogOpen] = useState(false);
+  const router = useRouter();
+  const { t } = useAppTranslations();
+  
+  const guestUser: User = {
+      id: "guest",
+      fullName: "Guest",
+      email: null,
+      phone: null,
+      passwordHash: null,
+      age: null,
+      city: null,
+      country: null,
+      gender: null,
+      role: "customer",
+      isAvailable: false,
+      createdAt: new Date(),
+  };
+
   return (
     <div className="flex flex-col bg-background">
       <section className="relative w-full py-20 md:py-32 lg:py-40">
@@ -38,24 +65,15 @@ export default function HomePage() {
             <div className="flex flex-col justify-center space-y-6">
               <div className="space-y-4">
                 <h1 className="text-4xl font-bold font-headline tracking-tighter sm:text-5xl xl:text-6xl/none">
-                  Your Personal AI Financial Coach
+                  {t.home.title}
                 </h1>
                 <p className="max-w-[600px] text-muted-foreground md:text-xl">
-                  FinSarthi provides personalized financial advice to help you
-                  achieve your goals. Get guidance on budgeting, saving,
-                  investing, and more.
+                  {t.home.description}
                 </p>
               </div>
               <div className="flex flex-col gap-2 min-[400px]:flex-row">
-                <Button asChild size="lg">
-                  <Link href="/onboarding">
-                    Get Started <ArrowRight className="ml-2" />
-                  </Link>
-                </Button>
-                <Button asChild size="lg" variant="outline">
-                   <Link href="/login">
-                    Login
-                  </Link>
+                <Button onClick={() => setIsAuthDialogOpen(true)} size="lg">
+                    {t.home.get_started} <ArrowRight className="ml-2" />
                 </Button>
               </div>
             </div>
@@ -70,32 +88,54 @@ export default function HomePage() {
         <div className="container px-4 md:px-6">
             <div className="flex flex-col items-center justify-center space-y-4 text-center">
                 <div className="space-y-2">
-                    <h2 className="text-3xl font-bold font-headline tracking-tighter sm:text-4xl">All-in-One Financial Toolkit</h2>
+                    <h2 className="text-3xl font-bold font-headline tracking-tighter sm:text-4xl">{t.home.toolkit_title}</h2>
                     <p className="max-w-[900px] text-muted-foreground md:text-lg lg:text-base xl:text-lg">
-                        From asking simple questions to generating complex financial plans, FinSarthi has the tools you need to succeed.
+                        {t.home.toolkit_description}
                     </p>
                 </div>
             </div>
             <div className="mx-auto grid max-w-5xl items-start gap-8 sm:grid-cols-2 md:gap-12 lg:grid-cols-3 mt-12">
                <FeatureCard 
                     icon={<MessageSquare className="h-12 w-12 text-primary" />}
-                    title="AI Coach"
-                    description="Get instant answers to your financial questions from our conversational AI."
+                    title={t.home.feature1_title}
+                    description={t.home.feature1_desc}
                 />
                 <FeatureCard 
                     icon={<Briefcase className="h-12 w-12 text-primary" />}
-                    title="Personalized Plans"
-                    description="Generate detailed, step-by-step financial plans tailored to your specific goals."
+                    title={t.home.feature2_title}
+                    description={t.home.feature2_desc}
                 />
                  <FeatureCard 
                     icon={<BarChart2 className="h-12 w-12 text-primary" />}
-                    title="Financial Tools"
-                    description="Simplify complex news and financial jargon with our easy-to-use summarizer and translator."
+                    title={t.home.feature3_title}
+                    description={t.home.feature3_desc}
                 />
             </div>
         </div>
       </section>
 
+      <section className="w-full py-12 md:py-24 lg:py-32">
+        <div className="container px-4 md:px-6 max-w-4xl mx-auto">
+             <div className="flex flex-col items-center justify-center space-y-4 text-center mb-12">
+                <div className="space-y-2">
+                    <h2 className="text-3xl font-bold font-headline tracking-tighter sm:text-4xl">{t.home.try_now_title}</h2>
+                    <p className="max-w-[900px] text-muted-foreground md:text-lg lg:text-base xl:text-lg">
+                        {t.home.try_now_desc}
+                    </p>
+                </div>
+            </div>
+            <FinancialCoach currentUser={guestUser} />
+        </div>
+      </section>
+      
+      <AuthDialog 
+        open={isAuthDialogOpen}
+        onOpenChange={setIsAuthDialogOpen}
+        onLoginSuccess={() => {
+            setIsAuthDialogOpen(false);
+            router.push('/coach');
+        }}
+      />
     </div>
   );
 }

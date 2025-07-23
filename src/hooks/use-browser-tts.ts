@@ -1,9 +1,14 @@
+
 // src/hooks/use-browser-tts.ts
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 
-export function useBrowserTts() {
+interface BrowserTtsOptions {
+    onEnd?: () => void;
+}
+
+export function useBrowserTts({ onEnd }: BrowserTtsOptions = {}) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
@@ -43,7 +48,7 @@ export function useBrowserTts() {
     utterance.lang = lang;
     
     // Find a matching voice from the loaded voices
-    const voice = voices.find(v => v.lang === lang);
+    const voice = voices.find(v => v.lang === lang || v.lang.startsWith(lang.split('-')[0]));
     if (voice) {
       utterance.voice = voice;
     } else {
@@ -54,15 +59,26 @@ export function useBrowserTts() {
     utterance.onend = () => {
       setIsPlaying(false);
       utteranceRef.current = null;
+      onEnd?.();
     };
     utterance.onerror = (e) => {
-        console.error("SpeechSynthesis Error", e);
+        if (e.error !== 'canceled') {
+            console.error("SpeechSynthesis Error", e);
+        }
         setIsPlaying(false);
         utteranceRef.current = null;
+        onEnd?.();
     };
 
     window.speechSynthesis.speak(utterance);
   };
 
-  return { speak, isPlaying };
+  const stop = useCallback(() => {
+      if (window.speechSynthesis) {
+          window.speechSynthesis.cancel();
+      }
+      setIsPlaying(false);
+  }, []);
+
+  return { speak, stop, isPlaying };
 }
