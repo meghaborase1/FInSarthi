@@ -73,4 +73,3 @@ This will open the Genkit Developer UI, where you can inspect and test your AI f
 ---
 
 With both servers running, you can now open your browser to `http://localhost:9002` and use the full application.
-# FInSarthi

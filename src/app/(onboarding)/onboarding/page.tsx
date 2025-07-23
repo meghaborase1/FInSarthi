@@ -22,7 +22,7 @@ import { Label } from "@/components/ui/label";
 import { DynamicAdviceStepper } from "@/components/dynamic-advice-stepper";
 import { createUser } from "@/services/user-service";
 import { associateSessionWithUser } from "@/services/advice-service";
-import type { AdviceSession } from "@/lib/db/schema";
+import type { AdviceSession, User } from "@/lib/db/schema";
 import { useRouter } from "next/navigation";
 import { useToast } from "@/hooks/use-toast";
 import { Loader2 } from "lucide-react";
@@ -30,6 +30,7 @@ import { useAuth } from "@/hooks/use-auth";
 
 type OnboardingStep = "language" | "signup" | "advice";
 
+// Schema for this flow only includes customer fields.
 const signupSchema = z.object({
   fullName: z.string().min(1, "Full name is required."),
   email: z.string().email("Invalid email address."),
@@ -76,20 +77,27 @@ export default function OnboardingPage() {
   const [step, setStep] = useState<OnboardingStep>("language");
   const [adviceSession, setAdviceSession] = useState<AdviceSession | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  
   const router = useRouter();
   const { toast } = useToast();
   const { t, languageCode } = useAppTranslations();
   const { login } = useAuth();
+  
+  // Local state for the language selection to avoid conflicts with global state
+  const [selectedLanguage, setSelectedLanguage] = useState<LanguageCode>(languageCode);
 
   const methods = useForm<SignupFormValues>({
     resolver: zodResolver(signupSchema),
-    mode: 'onChange'
+    mode: 'onChange',
   });
 
-  const handleLanguageSelect = (langCode: string) => {
-    localStorage.setItem("finsarthi_language", langCode);
-    window.location.reload(); // Reload to apply the new language everywhere
+  const handleLanguageContinue = () => {
+    localStorage.setItem("finsarthi_language", selectedLanguage);
+    // Reload only if the language has actually changed
+    if (selectedLanguage !== languageCode) {
+        window.location.reload();
+    } else {
+        setStep("signup");
+    }
   };
   
   const handleAdviceComplete = (session: AdviceSession) => {
@@ -111,6 +119,7 @@ export default function OnboardingPage() {
             fullName: signupData.fullName,
             email: signupData.email,
             passwordHash: signupData.password, // This is insecure, for prototype only
+            role: 'customer', // Onboarding is always for customers
         });
 
         if (!newUser) {
@@ -119,9 +128,9 @@ export default function OnboardingPage() {
         
         await associateSessionWithUser(adviceSession.id, newUser.id);
         
-        const loginSuccess = await login(signupData.email, signupData.password);
+        const loggedInUser = await login(signupData.email, signupData.password, 'customer');
         
-        if (loginSuccess) {
+        if (loggedInUser) {
             toast({ title: "Account Created!", description: "Welcome to FinSarthi!" });
             router.push("/dashboard");
         } else {
@@ -153,7 +162,7 @@ export default function OnboardingPage() {
               <CardDescription>{t.onboarding.language_desc}</CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-4">
-              <Select onValueChange={handleLanguageSelect} defaultValue={languageCode}>
+              <Select onValueChange={(val) => setSelectedLanguage(val as LanguageCode)} value={selectedLanguage}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select a language" />
                 </SelectTrigger>
@@ -165,7 +174,7 @@ export default function OnboardingPage() {
                   ))}
                 </SelectContent>
               </Select>
-              <Button onClick={() => setStep("signup")} className="self-end">
+              <Button onClick={handleLanguageContinue} className="self-end">
                 {t.common.next}
               </Button>
             </CardContent>

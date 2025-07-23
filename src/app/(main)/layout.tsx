@@ -1,7 +1,7 @@
 
 "use client";
 
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
@@ -16,6 +16,7 @@ import {
   Settings,
   Loader2,
   LogOut,
+  Users,
 } from "lucide-react";
 import {
   Sidebar,
@@ -29,6 +30,7 @@ import {
   SidebarInset,
   SidebarTrigger,
   useSidebar,
+  SidebarMenuBadge,
 } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import {
@@ -45,6 +47,7 @@ import { Separator } from "@/components/ui/separator";
 import { Logo } from "@/components/logo";
 import { useAuth } from "@/hooks/use-auth";
 import { useAppTranslations } from "@/hooks/use-app-translations";
+import { getUnreadMessageCountForUser } from "@/services/chat-service";
 
 function AppHeader() {
   const isMobile = useIsMobile();
@@ -99,9 +102,29 @@ function AppHeader() {
 function MainSidebar() {
   const pathname = usePathname();
   const { state } = useSidebar();
-  const { logout } = useAuth();
+  const { user, logout } = useAuth();
   const { t } = useAppTranslations();
   const router = useRouter();
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  useEffect(() => {
+    if (!user) return;
+    
+    const fetchCount = async () => {
+      try {
+        const count = await getUnreadMessageCountForUser(user.id);
+        setUnreadCount(count);
+      } catch (error) {
+        console.error("Failed to fetch unread message count", error);
+      }
+    };
+    
+    fetchCount();
+    const interval = setInterval(fetchCount, 10000); // Poll every 10 seconds
+
+    return () => clearInterval(interval);
+  }, [user, pathname]); // Re-check when user changes or path changes
+
 
   const handleLogout = () => {
     logout();
@@ -110,10 +133,11 @@ function MainSidebar() {
   
   const menuItems = [
     { href: "/dashboard", label: t.nav.dashboard, icon: LayoutGrid },
-    { href: "/coach", label: t.nav.coach, icon: MessageCircle },
+    { href: "/coach", label: t.nav.coach, icon: MessageCircle, badge: unreadCount > 0 ? String(unreadCount) : undefined },
     { href: "/summarizer", label: t.nav.summarizer, icon: FileText },
     { href: "/translator", label: t.nav.translator, icon: Languages },
     { href: "/advice", label: t.nav.advice, icon: Lightbulb },
+    { href: "/coaches", label: "Regional Coaches", icon: Users },
   ];
 
   return (
@@ -135,6 +159,7 @@ function MainSidebar() {
                 <Link href={item.href}>
                   <item.icon />
                   <span>{item.label}</span>
+                  {item.badge && <SidebarMenuBadge>{item.badge}</SidebarMenuBadge>}
                 </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>
@@ -185,10 +210,67 @@ function ProtectedLayout({ children }: { children: React.ReactNode }) {
     );
 }
 
+function CoachLayout({ children }: { children: React.ReactNode }) {
+  const { logout, user } = useAuth();
+  const router = useRouter();
+  const pathname = usePathname();
+
+  const handleLogout = () => {
+    logout();
+    router.push('/login');
+  };
+
+  const navItems = [
+    { href: '/coach-dashboard', label: 'Requests' },
+    { href: '/coach', label: 'Chat' },
+  ]
+
+  return (
+    <div className="flex min-h-screen w-full flex-col bg-muted/40">
+       <header className="sticky top-0 flex h-16 items-center gap-4 border-b bg-background px-4 md:px-6">
+        <Logo />
+        <nav className="hidden flex-col gap-6 text-lg font-medium md:flex md:flex-row md:items-center md:gap-5 md:text-sm lg:gap-6">
+           {navItems.map(item => (
+             <Link
+                key={item.href}
+                href={item.href}
+                className={`transition-colors hover:text-foreground ${pathname === item.href ? 'text-foreground' : 'text-muted-foreground'}`}
+            >
+                {item.label}
+            </Link>
+           ))}
+        </nav>
+        <div className="ml-auto flex items-center gap-4">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" className="rounded-full">
+                <Avatar>
+                  <AvatarImage src="https://placehold.co/100x100" alt={user?.fullName ?? 'Coach'} />
+                  <AvatarFallback>{user?.fullName?.[0]?.toUpperCase() ?? 'C'}</AvatarFallback>
+                </Avatar>
+                <span className="sr-only">Toggle user menu</span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuLabel>My Account</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={handleLogout}>Logout</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </header>
+      <main className="flex flex-1 flex-col gap-4 p-4 md:gap-8 md:p-8">
+        {children}
+      </main>
+    </div>
+  )
+}
+
 
 export default function MainLayout({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, user, isLoading } = useAuth();
   const router = useRouter();
+  const pathname = usePathname();
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
@@ -203,6 +285,33 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
       </div>
     );
   }
+  
+  if (user.role === 'coach') {
+    const allowedCoachRoutes = ['/coach-dashboard', '/coach'];
+    // If user is a coach and not on an allowed coach page, redirect them.
+    if (!allowedCoachRoutes.includes(pathname)) {
+      router.replace('/coach-dashboard');
+      // Show a loading spinner while redirecting
+      return (
+        <div className="flex min-h-screen w-full items-center justify-center bg-background">
+          <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        </div>
+      );
+    }
+    // Render the dedicated layout for coaches
+    return <CoachLayout>{children}</CoachLayout>;
+  }
 
+  // If a customer tries to access a coach route, redirect them to their dashboard
+  if (user.role === 'customer' && (pathname === '/coach-dashboard')) {
+      router.replace('/dashboard');
+      return (
+        <div className="flex min-h-screen w-full items-center justify-center bg-background">
+          <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        </div>
+      );
+  }
+
+  // Render the standard protected layout for customers
   return <ProtectedLayout>{children}</ProtectedLayout>;
 }
