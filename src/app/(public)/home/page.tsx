@@ -1,3 +1,4 @@
+
 "use client";
 
 import { Button } from "@/components/ui/button";
@@ -11,6 +12,7 @@ import { FinancialCoach } from "@/components/financial-coach";
 import type { User } from "@/lib/db/schema";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAppTranslations } from "@/providers/translations-provider";
+import { Carousel, CarouselContent, CarouselItem, CarouselNext, CarouselPrevious } from "@/components/ui/carousel";
 
 const FeatureCard = ({ icon, title, description }: { icon: React.ReactNode, title: string, description: string }) => (
   <div className="flex flex-col items-center p-6 text-center bg-card rounded-xl shadow-sm">
@@ -20,22 +22,12 @@ const FeatureCard = ({ icon, title, description }: { icon: React.ReactNode, titl
   </div>
 )
 
-const HeroIllustration = () => (
-    <div className="relative flex justify-center items-center">
-        <div className="absolute -top-10 -left-10 w-24 h-24 bg-primary/10 rounded-full animate-pulse"></div>
-        <div className="absolute -bottom-10 -right-10 w-32 h-32 bg-accent/10 rounded-full animate-pulse delay-500"></div>
-        <div className="relative p-8 bg-card/60 backdrop-blur-sm rounded-full shadow-lg border">
-            <Bot className="h-32 w-32 text-primary" strokeWidth={1.5} />
-            <div className="absolute top-8 -right-4 bg-card p-3 rounded-full shadow-md">
-                <BarChart2 className="h-6 w-6 text-accent"/>
-            </div>
-             <div className="absolute bottom-8 -left-4 bg-card p-3 rounded-full shadow-md">
-                <MessageSquare className="h-6 w-6 text-accent"/>
-            </div>
-        </div>
-    </div>
-)
-
+const sliderImages = [
+    { src: 'https://placehold.co/1200x600.png', alt: 'Financial coach advising a client', hint: 'financial advice' },
+    { src: 'https://placehold.co/1200x600.png', alt: 'A person creating a budget at a desk', hint: 'budgeting desk' },
+    { src: 'https://placehold.co/1200x600.png', alt: 'An upward-trending investment chart on a screen', hint: 'investment chart' },
+    { src: 'https://placehold.co/1200x600.png', alt: 'A happy couple planning their finances together', hint: 'happy couple' },
+]
 
 export default function HomePage() {
   const [isAuthDialogOpen, setIsAuthDialogOpen] = useState(false);
@@ -78,7 +70,35 @@ export default function HomePage() {
               </div>
             </div>
             <div className="flex items-center justify-center">
-              <HeroIllustration />
+               <Carousel
+                opts={{
+                    align: "start",
+                    loop: true,
+                }}
+                className="w-full max-w-xl"
+                >
+                <CarouselContent>
+                    {sliderImages.map((image, index) => (
+                    <CarouselItem key={index}>
+                        <div className="relative h-64 md:h-80 rounded-lg overflow-hidden shadow-2xl">
+                            <Image
+                                src={image.src}
+                                alt={image.alt}
+                                fill
+                                className="object-cover"
+                                data-ai-hint={image.hint}
+                            />
+                             <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent"></div>
+                             <div className="absolute bottom-0 left-0 p-6">
+                                <h3 className="text-xl font-bold text-white font-headline">{image.alt}</h3>
+                             </div>
+                        </div>
+                    </CarouselItem>
+                    ))}
+                </CarouselContent>
+                <CarouselPrevious className="absolute left-4 top-1/2 -translate-y-1/2" />
+                <CarouselNext className="absolute right-4 top-1/2 -translate-y-1/2" />
+             </Carousel>
             </div>
           </div>
         </div>
