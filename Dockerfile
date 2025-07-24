@@ -1,60 +1,44 @@
-# Stage 1: Build the Next.js application
-# Using a slim Node.js image for a smaller base size during the build process
-FROM node:20-slim AS builder
+# Stage 1: Build the React application
+FROM node:18-alpine AS builder
 
-# Set the working directory inside the container
 WORKDIR /app
 
-# Copy package.json and package-lock.json (if present)
-# This step is crucial for leveraging Docker's layer caching.
-# If only package.json changes, npm install will re-run.
-# If only code changes, this layer (and npm install) will be cached.
-COPY package.json package-lock.json* ./
+COPY package.json ./
+COPY package-lock.json ./
 
-# Install project dependencies
-# The --frozen-lockfile flag is used to ensure that the exact versions
-# specified in package-lock.json are installed, leading to consistent builds.
-RUN npm install --frozen-lockfile
+# Install dependencies, optimize for production
+RUN npm ci --only=production
 
-# Copy the rest of the application source code into the container
-COPY . .
+COPY . ./
 
-# Build the Next.js application for production
-# This command generates the optimized build output in the .next directory
+# Build the React app for production
+# Assuming your build script is 'npm run build' and output goes to 'build' folder
 RUN npm run build
 
-# Stage 2: Run the Next.js application in a production environment
-# Using a smaller, production-ready Node.js image for the final image
-FROM node:20-slim AS runner
+# Stage 2: Serve the React application with Nginx
+FROM nginx:alpine
 
-# Set the working directory inside the container
-WORKDIR /app
+# Copy the built React app from the builder stage
+COPY --from=builder /app/build /usr/share/nginx/html
 
-# Set environment variables for production
-# NODE_ENV is essential for Next.js to run in production mode
-ENV NODE_ENV production
-# Define the port the application will listen on.
-# This matches the port used in your package.json's dev script (9002),
-# but Next.js defaults to 3000 if PORT is not set. Explicitly setting it
-# ensures consistency.
-ENV PORT 9002
+# Remove the default Nginx configuration
+RUN rm /etc/nginx/conf.d/default.conf
 
-# Copy only the necessary files from the builder stage to the runner stage.
-# This minimizes the final image size by excluding development dependencies
-# and build artifacts not needed at runtime.
-# - public: Static assets like images, fonts, etc.
-# - .next: The compiled Next.js application output.
-# - node_modules: Production dependencies.
-# - package.json: Needed by 'npm start' to know how to run the app.
-COPY --from=builder /app/public ./public
-COPY --from=builder /app/.next ./.next
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package.json ./package.json
+# Copy your custom Nginx configuration (create this file if you need specific settings)
+# If you don't have one, Nginx's default will serve /usr/share/nginx/html
+# You might want to create a file named nginx.conf in your project root with content like:
+# server {
+#     listen 80;
+#     location / {
+#         root /usr/share/nginx/html;
+#         index index.html index.htm;
+#         try_files $uri $uri/ /index.html;
+#     }
+# }
+COPY nginx.conf /etc/nginx/conf.d/your-app.conf
 
-# Expose the port on which the Next.js application will run.
-# This informs Docker that the container listens on this port at runtime.
-EXPOSE ${PORT}
+# Expose port 80 to the host
+EXPOSE 80
 
-# Define the command to start the Next.js application in production mode.
-# 'npm start' executes the 'start' script defined in your package.json.
-CMD ["npm", "start"]
+# Command to run Nginx
+CMD ["nginx", "-g", "daemon off;"]
