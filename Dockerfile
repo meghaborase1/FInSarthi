@@ -1,58 +1,31 @@
-# ---- Base image ----
-FROM node:20-slim AS base
-
-# Set working directory
+# Stage 1: Dependencies
+FROM node:18-alpine AS deps
+RUN apk add --no-cache libc6-compat
 WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm install --frozen-lockfile
 
-# Install pnpm globally
-RUN npm install -g pnpm
-
-# ---- Install dependencies ----
-FROM base AS deps
-
+# Stage 2: Builder
+FROM node:18-alpine AS builder
 WORKDIR /app
-
-# Only copy package.json to leverage Docker cache
-COPY package.json ./
-
-# Install all dependencies (no lockfile used)
-RUN pnpm install
-
-# ---- Build the app ----
-FROM base AS builder
-
-WORKDIR /app
-
-# Copy dependencies from deps stage
 COPY --from=deps /app/node_modules ./node_modules
-
-# Copy all app files
 COPY . .
-
-# Optional: Set build environment variables (or set via Cloud Run)
-ARG DATABASE_URL
-ENV DATABASE_URL=$DATABASE_URL
-
-ARG GROQ_API_KEY
-ENV GROQ_API_KEY=$GROQ_API_KEY
-
-# Build the Next.js app
+ENV NEXT_TELEMETRY_DISABLED 1
 RUN npm run build
 
-# ---- Final run image ----
-FROM node:20-slim AS runner
-
+# Stage 3: Runner
+FROM node:18-alpine AS runner
 WORKDIR /app
-
-ENV NODE_ENV=production
-
-# Copy only required build output (standalone)
+ENV NODE_ENV production
+# Add a non-root user for security
+RUN addgroup --system --gid 1001 nextjs
+RUN adduser --system --uid 1001 nextjs
+USER nextjs
+COPY --from=builder /app/.next ./.next
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/public ./public
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
 
-# Use PORT from Cloud Run or default to 3000
-ENV PORT=3000
+EXPOSE 3000
 
-# Start server
-CMD ["node", "server.js"]
+CMD ["npm", "start"]
