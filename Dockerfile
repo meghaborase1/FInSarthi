@@ -1,37 +1,58 @@
-# Build Stage
-FROM node:18-alpine as build-stage
+# ---- Base image ----
+FROM node:20-slim AS base
+
+# Set working directory
+WORKDIR /app
+
+# Install pnpm globally
+RUN npm install -g pnpm
+
+# ---- Install dependencies ----
+FROM base AS deps
 
 WORKDIR /app
 
-# Copy package.json and package-lock.json first to leverage Docker's layer caching
-COPY package*.json ./
+# Only copy package.json to leverage Docker cache
+COPY package.json ./
 
-# Install dependencies
-RUN npm install
+# Install all dependencies (no lockfile used)
+RUN pnpm install
 
-# Copy the rest of the application files
+# ---- Build the app ----
+FROM base AS builder
+
+WORKDIR /app
+
+# Copy dependencies from deps stage
+COPY --from=deps /app/node_modules ./node_modules
+
+# Copy all app files
 COPY . .
 
-# Build the React application
+# Optional: Set build environment variables (or set via Cloud Run)
+ARG DATABASE_URL
+ENV DATABASE_URL=$DATABASE_URL
+
+ARG GROQ_API_KEY
+ENV GROQ_API_KEY=$GROQ_API_KEY
+
+# Build the Next.js app
 RUN npm run build
 
-# Production Stage
-FROM nginx:alpine
+# ---- Final run image ----
+FROM node:20-slim AS runner
 
-# Copy the Nginx configuration file
-# Ensure you have an nginx.conf in your project root if you customize Nginx
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+WORKDIR /app
 
-RUN ls
+ENV NODE_ENV=production
 
-RUN cd /app
+# Copy only required build output (standalone)
+COPY --from=builder /app/public ./public
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
 
-RUN ls
-# Copy the built React application from the build stage to Nginx's web root
-COPY --from=build-stage /app/build /usr/share/nginx/html
+# Use PORT from Cloud Run or default to 3000
+ENV PORT=3000
 
-# Expose port 80 for Nginx
-EXPOSE 80
-
-# Command to start Nginx
-CMD ["nginx", "-g", "daemon off;"]
+# Start server
+CMD ["node", "server.js"]
